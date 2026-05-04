@@ -7,11 +7,11 @@ class Profile(Base):
     user_id = Column(String(50), primary_key=True, index=True)
     full_name = Column(String(255))
     consent_personalization = Column(Boolean, default=False)
-    occupation = Column(String(100)) # Opsional, buat bantu lihat data
+    occupation = Column(String(100))
 
 class ClusteringResult(Base):
     __tablename__ = "clustering_results"
 
     user_id = Column(String(50), ForeignKey("dim_profile.user_id"), primary_key=True)
-    cluster_id = Column(Integer) # Misal: 1=Mahasiswa, 2=Young Prof, dsb.
+    cluster_id = Column(Integer)
     last_updated = Column(TIMESTAMP)
