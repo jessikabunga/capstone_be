@@ -2,7 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # Format: postgresql://username:password@localhost/nama_database
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:bunga235@localhost:5432/capstone_db"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:password@localhost/database"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
