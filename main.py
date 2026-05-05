@@ -1,3 +1,4 @@
+from enum import Enum
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
@@ -9,6 +10,7 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
+from datetime import date
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "capstone_kelompok_3"
@@ -29,7 +31,28 @@ def create_access_token(data: dict):
 
 class UserCreate(BaseModel):
     username: str
+    email: str
     password: str
+
+class OccupationChoice(str, Enum):
+    pelajar_mahasiswa = "Pelajar / Mahasiswa"
+    fresh_graduate = "Fresh Graduate"
+    karyawan_swasta = "Karyawan Swasta"
+    pns = "PNS"
+    pengusaha = "Pengusaha / Wirausaha"
+    profesional = "Profesional"
+    freelancer = "Freelancer"
+
+class ProfileCreate(BaseModel):
+    full_name: str
+    dob: date
+    nik: str
+    occupation: OccupationChoice
+    phone_number: str
+    address: str
+    city: str
+    province: str
+    consent_personalization: bool
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -78,15 +101,28 @@ def read_root():
 
 @app.post("/register", tags=["Auth"])
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username sudah terdaftar")
+    if db.query(User).filter(User.username == user.username).first():
+        raise HTTPException(status_code=400, detail="Username sudah dipakai")
     
     hashed_pw = get_password_hash(user.password)
-    new_user = User(username=user.username, hashed_password=hashed_pw)
+    new_user = User(username=user.username, email=user.email, hashed_password=hashed_pw)
     db.add(new_user)
     db.commit()
-    return {"message": "User berhasil didaftarkan!"}
+    return {"message": "Akun berhasil dibuat, silakan lanjut isi profil"}
+
+@app.post("/profile", tags=["User Profile"])
+def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    existing_profile = db.query(models.Profile).filter(models.Profile.user_id == current_user.id).first()
+    if existing_profile:
+        raise HTTPException(status_code=400, detail="Profil sudah diisi")
+
+    new_profile = models.Profile(
+        user_id=current_user.id,
+        **data.dict()
+    )
+    db.add(new_profile)
+    db.commit()
+    return {"message": "Profil berhasil disimpan"}
 
 @app.post("/login", tags=["Auth"])
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -102,37 +138,79 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/recommendation/{user_id}", response_model=schemas.PromoResponse)
-def get_recommendation(user_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+# Tanpa ML
+@app.get("/recommendation", response_model=schemas.PromoResponse)
+def get_recommendation(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     
-    user = db.query(models.Profile).filter(models.Profile.user_id == user_id).first()
+    user_profile = db.query(models.Profile).filter(models.Profile.user_id == current_user.id).first()
     
-    if not user:
-        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    if not user_profile:
+        raise HTTPException(status_code=404, detail="Profil belum diisi, silakan isi profil terlebih dahulu")
 
-    if user.consent_personalization == False:
+    if user_profile.consent_personalization == False:
         return schemas.PromoResponse(
-            user_id=user.user_id,
+            user_id=current_user.id,
             message="User opted out of personalization",
             promo_title=PROMO_CATALOG["general"]["title"],
             promo_type=PROMO_CATALOG["general"]["type"]
         )
     
-    ml_result = db.query(models.ClusteringResult).filter(models.ClusteringResult.user_id == user_id).first()
+    # =======================================================
+    # MOCKING ML: Tebak promo berdasarkan kolom 'occupation'
+    # =======================================================
+    pekerjaan = user_profile.occupation.lower()
     
-    if not ml_result or ml_result.cluster_id not in PROMO_CATALOG:
-        return schemas.PromoResponse(
-            user_id=user.user_id,
-            message="Data ML belum siap, mengirim promo default",
-            promo_title=PROMO_CATALOG["general"]["title"],
-            promo_type=PROMO_CATALOG["general"]["type"]
-        )
+    if "mahasiswa" in pekerjaan or "pelajar" in pekerjaan:
+        cluster_id = 1
+    elif "fresh graduate" in pekerjaan or "karyawan" in pekerjaan:
+        cluster_id = 2
+    elif "pengusaha" in pekerjaan or "pns" in pekerjaan or "profesional" in pekerjaan:
+        cluster_id = 3
+    elif "freelance" in pekerjaan:
+        cluster_id = 4
+    else:
+        cluster_id = 2
 
-    selected_promo = PROMO_CATALOG[ml_result.cluster_id]
+    selected_promo = PROMO_CATALOG[cluster_id]
     
     return schemas.PromoResponse(
-        user_id=user.user_id,
-        message=f"Success getting promo for {user.occupation}",
+        user_id=current_user.id,
+        message=f"Success getting promo for {user_profile.occupation}",
         promo_title=selected_promo["title"],
         promo_type=selected_promo["type"]
     )
+
+# Pakai ML
+# @app.get("/recommendation", response_model=schemas.PromoResponse)
+# def get_recommendation(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+#     user_profile = db.query(models.Profile).filter(models.Profile.user_id == current_user.id).first()
+    
+#     if not user_profile:
+#         raise HTTPException(status_code=404, detail="Profil belum diisi, silakan isi profil terlebih dahulu")
+
+#     if user_profile.consent_personalization == False:
+#         return schemas.PromoResponse(
+#             user_id=current_user.id,
+#             message="User opted out of personalization",
+#             promo_title=PROMO_CATALOG["general"]["title"],
+#             promo_type=PROMO_CATALOG["general"]["type"]
+#         )
+    
+#     ml_result = db.query(models.ClusteringResult).filter(models.ClusteringResult.user_id == current_user.id).first()
+    
+#     if not ml_result or ml_result.cluster_id not in PROMO_CATALOG:
+#         return schemas.PromoResponse(
+#             user_id=current_user.id,
+#             message="Data ML belum siap, mengirim promo default",
+#             promo_title=PROMO_CATALOG["general"]["title"],
+#             promo_type=PROMO_CATALOG["general"]["type"]
+#         )
+
+#     selected_promo = PROMO_CATALOG[ml_result.cluster_id]
+    
+#     return schemas.PromoResponse(
+#         user_id=current_user.id,
+#         message=f"Success getting promo for {user_profile.occupation}",
+#         promo_title=selected_promo["title"],
+#         promo_type=selected_promo["type"]
+#     )
