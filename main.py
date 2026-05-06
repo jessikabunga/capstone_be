@@ -3,14 +3,15 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
 import models 
-from models import User
 import schemas
 from passlib.context import CryptContext
 import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from datetime import date
+import random
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "capstone_kelompok_3"
@@ -30,9 +31,26 @@ def create_access_token(data: dict):
     return encoded_jwt
 
 class UserCreate(BaseModel):
-    username: str
-    email: str
-    password: str
+    username: str = Field(
+        min_length=5, 
+        max_length=20,
+        
+        description="Username harus terdiri dari 5 hingga 20 karakter"
+    )
+    email_address: EmailStr 
+    password: str = Field(
+        min_length=6,
+        max_length=12,
+        description="Password harus 6-12 karakter dan mengandung huruf, angka, serta simbol"
+    )
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_complexity(cls, v):
+        pattern = r"^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&.,_\\-])[A-Za-z\d@$!%*#?&.,_\\-]+$"
+        if not re.match(pattern, v):
+            raise ValueError("Password harus mengandung huruf, angka, serta simbol (@$!%*#?&)")
+        return v
 
 class OccupationChoice(str, Enum):
     pelajar_mahasiswa = "Pelajar / Mahasiswa"
@@ -44,28 +62,56 @@ class OccupationChoice(str, Enum):
     freelancer = "Freelancer"
 
 class ProfileCreate(BaseModel):
-    full_name: str
-    dob: date
-    nik: str
+    full_name: str = Field(
+        min_length=5, 
+        max_length=20, 
+        pattern=r"^[a-zA-Z\s.,]+$",
+        description="Nama lengkap beserta gelar jika ada"
+    )
+    birth_place: str
+    birth_date: date 
+    national_id: str = Field(pattern=r"^\d{16}$")
     occupation: OccupationChoice
-    phone_number: str
-    address: str
-    city: str
-    province: str
+    phone_number: str = Field(pattern=r"^\d{10,14}$")
+    street_address: str = Field(min_length=10, max_length=255)
+    city: str = Field(min_length=2, max_length=50)
+    province: str = Field(min_length=4, max_length=50)
+    monthly_income: float = Field(default=0.0)
     consent_personalization: bool
+    
+    pin: str = Field(
+        min_length=6,
+        max_length=6,
+        pattern=r"^\d{6}$",
+        description="PIN 6 digit angka untuk transaksi"
+    )
+
+    
+    @field_validator('birth_date')
+    @classmethod
+    def check_birth_date(cls, v):
+        if v > date.today():
+            raise ValueError("Tanggal lahir tidak masuk akal (masa depan)")
+        return v
+
+    @field_validator('national_id', 'phone_number')
+    @classmethod
+    def check_not_all_same_digits(cls, v):
+        if len(set(v)) == 1:
+            raise ValueError("Data tidak boleh berisi angka yang sama semua")
+        return v
 
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="CIMB Capstone")
 
 # ==========================================
-# DICTIONARY PROMO (Berdasarkan Flowchart PM)
+# DICTIONARY PROMO
 # ==========================================
 # 1 = Mahasiswa
 # 2 = Young Professional
 # 3 = Established Professional
 # 4 = Freelancer
-
 PROMO_CATALOG = {
     1: {"title": "Diskon 50% QRIS Kopi Kenangan & Mie Gacoan!", "type": "Promo #1"},
     2: {"title": "Cashback Top Up E-Wallet s/d Rp 50.000", "type": "Promo #2"},
@@ -75,6 +121,10 @@ PROMO_CATALOG = {
 }
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# ==========================================
+# ENDPOINTS / API
+# ==========================================
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -90,7 +140,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except jwt.PyJWTError:
         raise credentials_exception
         
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(models.Profile).filter(models.Profile.username == username).first()
     if user is None:
         raise credentials_exception
     return user
@@ -101,34 +151,28 @@ def read_root():
 
 @app.post("/register", tags=["Auth"])
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.username == user.username).first():
-        raise HTTPException(status_code=400, detail="Username sudah dipakai")
+    if db.query(models.Profile).filter(models.Profile.username == user.username).first():
+        raise HTTPException(status_code=400, detail="Username sudah dipakai!")
+
+    if db.query(models.Profile).filter(models.Profile.email_address == user.email_address).first():
+        raise HTTPException(status_code=400, detail="Email sudah terdaftar!")
     
     hashed_pw = get_password_hash(user.password)
-    new_user = User(username=user.username, email=user.email, hashed_password=hashed_pw)
+    
+    new_user = models.Profile(
+        username=user.username, 
+        email_address=user.email_address,
+        password_hash=hashed_pw
+    )
     db.add(new_user)
     db.commit()
     return {"message": "Akun berhasil dibuat, silakan lanjut isi profil"}
 
-@app.post("/profile", tags=["User Profile"])
-def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    existing_profile = db.query(models.Profile).filter(models.Profile.user_id == current_user.id).first()
-    if existing_profile:
-        raise HTTPException(status_code=400, detail="Profil sudah diisi")
-
-    new_profile = models.Profile(
-        user_id=current_user.id,
-        **data.dict()
-    )
-    db.add(new_profile)
-    db.commit()
-    return {"message": "Profil berhasil disimpan"}
-
 @app.post("/login", tags=["Auth"])
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == form_data.username).first()
+    user = db.query(models.Profile).filter(models.Profile.username == form_data.username).first()
     
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Username atau password salah",
@@ -138,27 +182,57 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
+@app.post("/profile", tags=["User Profile"])
+def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_user: models.Profile = Depends(get_current_user)):
+    
+    if current_user.full_name:
+        raise HTTPException(status_code=400, detail="Profil sudah diisi")
+
+    profile_dict = data.model_dump()
+    
+    raw_pin = profile_dict.pop("pin")
+    current_user.pin_hash = get_password_hash(raw_pin)
+    
+    current_user.account_number = "".join([str(random.randint(0, 9)) for _ in range(10)])
+    
+    current_user.account_balance = 0.0 
+
+    today = date.today()
+    birth_date = data.birth_date
+    calculated_age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+    current_user.age = calculated_age
+    
+    for key, value in profile_dict.items():
+        setattr(current_user, key, value)
+    
+    db.commit()
+    db.refresh(current_user)
+    
+    return {
+        "status": "success",
+        "message": "Profil berhasil dibuat",
+        "data": {
+            "account_number": current_user.account_number,
+            "age": current_user.age,
+            "balance": current_user.account_balance
+        }
+    }
+
 # Tanpa ML
 @app.get("/recommendation", response_model=schemas.PromoResponse)
-def get_recommendation(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
-    user_profile = db.query(models.Profile).filter(models.Profile.user_id == current_user.id).first()
-    
-    if not user_profile:
+def get_recommendation(current_user: models.Profile = Depends(get_current_user)):
+    if not current_user.full_name:
         raise HTTPException(status_code=404, detail="Profil belum diisi, silakan isi profil terlebih dahulu")
 
-    if user_profile.consent_personalization == False:
+    if current_user.consent_personalization == False:
         return schemas.PromoResponse(
-            user_id=current_user.id,
+            user_id=current_user.user_id,
             message="User opted out of personalization",
             promo_title=PROMO_CATALOG["general"]["title"],
             promo_type=PROMO_CATALOG["general"]["type"]
         )
     
-    # =======================================================
-    # MOCKING ML: Tebak promo berdasarkan kolom 'occupation'
-    # =======================================================
-    pekerjaan = user_profile.occupation.lower()
+    pekerjaan = current_user.occupation.lower()
     
     if "mahasiswa" in pekerjaan or "pelajar" in pekerjaan:
         cluster_id = 1
@@ -174,8 +248,8 @@ def get_recommendation(db: Session = Depends(get_db), current_user: User = Depen
     selected_promo = PROMO_CATALOG[cluster_id]
     
     return schemas.PromoResponse(
-        user_id=current_user.id,
-        message=f"Success getting promo for {user_profile.occupation}",
+        user_id=current_user.user_id,
+        message=f"Success getting promo for {current_user.occupation}",
         promo_title=selected_promo["title"],
         promo_type=selected_promo["type"]
     )
