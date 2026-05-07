@@ -7,6 +7,7 @@ class Profile(Base):
 
     username = Column(String, unique=True, index=True)
     password_hash = Column(String)
+    account_number = Column(String(20), unique=True, index=True)
     full_name = Column(String(255))
     birth_place = Column(String(100))
     birth_date = Column(Date) 
@@ -21,6 +22,7 @@ class Profile(Base):
     age = Column(Integer)
     occupation = Column(String(100))
     monthly_income = Column(Float, default=0.0)
+    account_balance = Column(Float, default=0.0)
     consent_personalization = Column(Boolean, default=False)
 
 class ClusteringResult(Base):
