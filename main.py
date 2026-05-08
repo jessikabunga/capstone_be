@@ -11,6 +11,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import re
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from datetime import date
+from fastapi.middleware.cors import CORSMiddleware
 import random
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -100,10 +101,24 @@ class ProfileCreate(BaseModel):
         if len(set(v)) == 1:
             raise ValueError("Data tidak boleh berisi angka yang sama semua")
         return v
-
-models.Base.metadata.create_all(bind=engine)
-
+    
 app = FastAPI(title="CIMB Capstone")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    print("VALIDATION ERROR:", exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 # ==========================================
 # DICTIONARY PROMO
@@ -213,10 +228,44 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_u
         "message": "Profil berhasil dibuat",
         "data": {
             "account_number": current_user.account_number,
+            "account_balance": current_user.account_balance,
             "age": current_user.age,
             "balance": current_user.account_balance
         }
     }
+
+@app.get("/profile", tags=["User Profile"])
+def get_profile(current_user: models.Profile = Depends(get_current_user)):
+    if not current_user.full_name:
+        raise HTTPException(status_code=404, detail="Profil belum diisi")
+    return {
+        "full_name": current_user.full_name,
+        "national_id": current_user.national_id,
+        "birth_place": current_user.birth_place,
+        "birth_date": str(current_user.birth_date) if current_user.birth_date else None,
+        "email_address": current_user.email_address,
+        "phone_number": current_user.phone_number,
+        "occupation": current_user.occupation,
+        "monthly_income": current_user.monthly_income,
+        "street_address": current_user.street_address,
+        "city": current_user.city,
+        "province": current_user.province,
+        "age": current_user.age,
+        "account_number": current_user.account_number,  
+        "account_balance": current_user.account_balance, 
+        "consent_personalization": current_user.consent_personalization,
+    }
+
+class ConsentUpdate(BaseModel):
+    consent_personalization: bool
+
+@app.patch("/profile/consent", tags=["User Profile"])
+def update_consent(data: ConsentUpdate, current_user: models.Profile = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_user.consent_personalization = data.consent_personalization
+    db.commit()
+    return {"message": "Consent updated", "consent_personalization": current_user.consent_personalization}
+
+models.Base.metadata.create_all(bind=engine)
 
 # Tanpa ML
 @app.get("/recommendation", response_model=schemas.PromoResponse)
