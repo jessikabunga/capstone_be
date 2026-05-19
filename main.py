@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field, EmailStr, field_validator
 from datetime import date
 from fastapi.middleware.cors import CORSMiddleware
 import random
+from decimal import Decimal
+from sqlalchemy import func
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "capstone_kelompok_3"
@@ -69,15 +71,15 @@ class ProfileCreate(BaseModel):
         pattern=r"^[a-zA-Z\s.,]+$",
         description="Nama lengkap beserta gelar jika ada"
     )
-    birth_place: str
-    birth_date: date 
+    place_of_birth: str
+    date_of_birth: date 
     national_id: str = Field(pattern=r"^\d{16}$")
     occupation: OccupationChoice
     phone_number: str = Field(pattern=r"^\d{10,14}$")
     street_address: str = Field(min_length=10, max_length=255)
     city: str = Field(min_length=2, max_length=50)
     province: str = Field(min_length=4, max_length=50)
-    monthly_income: float = Field(default=0.0)
+    monthly_income: Decimal = Field(default=Decimal('0.00'))
     consent_personalization: bool
     
     pin: str = Field(
@@ -88,7 +90,7 @@ class ProfileCreate(BaseModel):
     )
 
     
-    @field_validator('birth_date')
+    @field_validator('date_of_birth')
     @classmethod
     def check_birth_date(cls, v):
         if v > date.today():
@@ -213,8 +215,8 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_u
     current_user.account_balance = 0.0 
 
     today = date.today()
-    birth_date = data.birth_date
-    calculated_age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+    date_of_birth = data.date_of_birth
+    calculated_age = today.year - date_of_birth.year - ((today.month, today.day) < (date_of_birth.month, date_of_birth.day))
     current_user.age = calculated_age
     
     for key, value in profile_dict.items():
@@ -241,8 +243,8 @@ def get_profile(current_user: models.Profile = Depends(get_current_user)):
     return {
         "full_name": current_user.full_name,
         "national_id": current_user.national_id,
-        "birth_place": current_user.birth_place,
-        "birth_date": str(current_user.birth_date) if current_user.birth_date else None,
+        "place_of_birth": current_user.place_of_birth,
+        "date_of_birth": str(current_user.date_of_birth) if current_user.date_of_birth else None,
         "email_address": current_user.email_address,
         "phone_number": current_user.phone_number,
         "occupation": current_user.occupation,
@@ -337,3 +339,97 @@ def get_recommendation(current_user: models.Profile = Depends(get_current_user))
 #         promo_title=selected_promo["title"],
 #         promo_type=selected_promo["type"]
 #     )
+
+@app.post("/api/v1/track", tags=["Tracking"], status_code=201)
+def track_user_interaction(
+    interaction: schemas.InteractionCreate, 
+    db: Session = Depends(get_db)
+):
+    try:
+        new_log = models.Interaction(
+            user_id=interaction.user_id,
+            session_id=interaction.session_id,
+            timestamp=datetime.now(timezone.utc), 
+            feature_accessed=interaction.feature_accessed,
+            action=interaction.action
+        )
+        
+        db.add(new_log)
+        db.commit()
+        db.refresh(new_log)
+        
+        return {
+            "status": "success", 
+            "message": "Aktivitas berhasil dicatat",
+            "log_id": new_log.log_id
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Terjadi kesalahan saat mencatat log: {str(e)}")
+    
+@app.get("/api/v1/admin/dashboard-stats", tags=["Admin Dashboard"])
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    try:
+        total_volume = db.query(func.sum(models.Transaction.amount)).scalar() or Decimal
+        payment_methods = db.query(
+            models.Transaction.transaction_method,
+            func.count(models.Transaction.trx_id).label("total_transaksi"),
+            func.sum(models.Transaction.amount).label("total_nominal")
+        ).group_by(models.Transaction.transaction_method).all()
+
+        category_stats = db.query(
+            models.Transaction.category,
+            func.count(models.Transaction.trx_id).label("total_transaksi"),
+            func.sum(models.Transaction.amount).label("total_nominal")
+        ).group_by(models.Transaction.category).order_by(func.sum(models.Transaction.amount).desc()).all()
+
+        total_users = db.query(func.count(models.Profile.user_id)).scalar() or 0
+        consent_true_count = db.query(func.count(models.Profile.user_id)).filter(models.Profile.consent_personalization == True).scalar() or 0
+        consent_rate = round((consent_true_count / total_users * 100), 2) if total_users > 0 else 0
+
+        segment_transaction_stats = db.query(
+            models.Profile.occupation,
+            func.count(models.Transaction.trx_id).label("total_transaksi"),
+            func.sum(models.Transaction.amount).label("total_nominal")
+        ).join(
+            models.Transaction, models.Profile.user_id == models.Transaction.user_id
+        ).filter(
+            models.Profile.consent_personalization == True
+        ).group_by(
+            models.Profile.occupation
+        ).all()
+
+        return {
+            "summary": {
+                "total_users_registered": total_users,
+                "consent_rate_percentage": consent_rate,
+                "total_all_transaction_volume": total_volume
+            },
+            "charts": {
+                "payment_methods_usage": [
+                    {
+                        "method": row.transaction_method, 
+                        "count": row.total_transaksi, 
+                        "amount": row.total_nominal
+                    } for row in payment_methods
+                ],
+                "spending_categories": [
+                    {
+                        "category": row.category, 
+                        "count": row.total_transaksi, 
+                        "amount": row.total_nominal
+                    } for row in category_stats
+                ],
+                "personalized_transactions_by_occupation": [
+                    {
+                        "occupation": row.occupation, 
+                        "count": row.total_transaksi, 
+                        "amount": row.total_nominal
+                    } for row in segment_transaction_stats
+                ]
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal memproses data dashboard finansial: {str(e)}")

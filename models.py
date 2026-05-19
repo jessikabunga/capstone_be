@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, String, Integer, Numeric, Boolean, ForeignKey, TIMESTAMP, DateTime, Date
+from sqlalchemy import Column, String, Integer, Numeric, Boolean, ForeignKey, TIMESTAMP, DateTime, Date
 from database import Base
 
 class Profile(Base):
@@ -9,9 +9,9 @@ class Profile(Base):
     password_hash = Column(String)
     account_number = Column(String(20), unique=True, index=True)
     full_name = Column(String(255))
-    birth_place = Column(String(100))
-    birth_date = Column(Date) 
-    national_id = Column(String(20), unique=True)
+    place_of_birth = Column(String(100))
+    date_of_birth = Column(Date) 
+    national_id = Column(String(16), unique=True)
     email_address = Column(String(100), unique=True)
     pin_hash = Column(String(255))
     created_at = Column(DateTime)
@@ -21,8 +21,8 @@ class Profile(Base):
     province = Column(String(100))
     age = Column(Integer)
     occupation = Column(String(100))
-    monthly_income = Column(Float, default=0.0)
-    account_balance = Column(Float, default=0.0)
+    monthly_income = Column(Numeric(15,2), default=0.00)
+    account_balance = Column(Numeric(15,2), default=0.00)
     consent_personalization = Column(Boolean, default=False)
 
 class ClusteringResult(Base):
@@ -41,7 +41,9 @@ class Transaction(Base):
     category = Column(String(100))
     merchant_name = Column(String(100))
     transaction_method = Column(String(50))
-    amount = Column(Float)
+    amount = Column(Numeric(15, 2))
+    days_ago = Column(Integer)
+    week_status = Column(String(50))
 
 class Interaction(Base):
     __tablename__ = "fact_interactions"
