@@ -27,10 +27,13 @@ class Profile(Base):
 
 class ClusteringResult(Base):
     __tablename__ = "clustering_results"
-
-    user_id = Column(Integer, ForeignKey("dim_profile.user_id"), primary_key=True)
-    cluster_id = Column(Integer)
-    last_updated = Column(TIMESTAMP)
+    user_id                   = Column(Integer, ForeignKey("dim_profile.user_id"), primary_key=True)
+    cluster_id                = Column(Integer)
+    predicted_cta             = Column(String(100))
+    generated_message         = Column(String(500))
+    category_focus            = Column(String(100))
+    recommendation_confidence = Column(Numeric(5, 4))
+    timestamp                 = Column(DateTime(timezone=True))
 
 class Transaction(Base):
     __tablename__ = "fact_transactions"
@@ -50,7 +53,15 @@ class Interaction(Base):
 
     log_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("dim_profile.user_id"))
-    session_id = Column(String(50))
+    session_id = Column(Integer)
     timestamp = Column(DateTime)
     feature_accessed = Column(String(100))
     action = Column(String(50))
+    interaction_type = Column(String(50), nullable=True)
+
+class TokenBlacklist(Base):
+    __tablename__ = "token_blacklist"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    token      = Column(String, unique=True, nullable=False, index=True)
+    blacklisted_at = Column(DateTime(timezone=True), nullable=False)

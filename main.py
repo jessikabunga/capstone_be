@@ -1,5 +1,5 @@
 from enum import Enum
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
 import models 
@@ -33,6 +33,7 @@ def create_access_token(data: dict):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+# PYDANTIC SCHEMAS (Request Models)
 class UserCreate(BaseModel):
     username: str = Field(
         min_length=5, 
@@ -81,7 +82,6 @@ class ProfileCreate(BaseModel):
     province: str = Field(min_length=4, max_length=50)
     monthly_income: Decimal = Field(default=Decimal('0.00'))
     consent_personalization: bool
-    
     pin: str = Field(
         min_length=6,
         max_length=6,
@@ -104,6 +104,12 @@ class ProfileCreate(BaseModel):
             raise ValueError("Data tidak boleh berisi angka yang sama semua")
         return v
     
+class ConsentUpdate(BaseModel):
+    consent_personalization: bool
+
+# ==========================================
+# APP Init   
+# ==========================================
 app = FastAPI(title="CIMB Capstone")
 
 app.add_middleware(
@@ -122,33 +128,39 @@ async def validation_exception_handler(request, exc):
     print("VALIDATION ERROR:", exc.errors())
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
-# ==========================================
 # DICTIONARY PROMO
 # ==========================================
-# 1 = Mahasiswa
-# 2 = Young Professional
-# 3 = Established Professional
-# 4 = Freelancer
+# 0 = Student
+# 1 = Young Professional
+# 2 = Established Professional
+# 3 = Freelancer
 PROMO_CATALOG = {
-    1: {"title": "Diskon 50% QRIS Kopi Kenangan & Mie Gacoan!", "type": "Promo #1"},
-    2: {"title": "Cashback Top Up E-Wallet s/d Rp 50.000", "type": "Promo #2"},
-    3: {"title": "Penawaran Spesial: Limit Kartu Kredit s/d 50 Juta", "type": "Promo #3"},
-    4: {"title": "Bebas Biaya Transfer Antar Bank Selama Sebulan!", "type": "Promo #1"},
+    0: {"title": "Diskon 50% QRIS Kopi Kenangan & Mie Gacoan!", "type": "Promo #1"},
+    1: {"title": "Cashback Top Up E-Wallet s/d Rp 50.000", "type": "Promo #2"},
+    2: {"title": "Penawaran Spesial: Limit Kartu Kredit s/d 50 Juta", "type": "Promo #3"},
+    3: {"title": "Bebas Biaya Transfer Antar Bank Selama Sebulan!", "type": "Promo #1"},
     "general": {"title": "Waspada Penipuan! Jaga Kerahasiaan PIN Anda", "type": "Non-Promo"}
 }
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# ==========================================
-# ENDPOINTS / API
-# ==========================================
+models.Base.metadata.create_all(bind=engine)
 
+# ==========================================
+# Auth Helper
+# ==========================================
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token tidak valid atau sudah kedaluwarsa",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    is_blacklisted = db.query(models.TokenBlacklist).filter(
+        models.TokenBlacklist.token == token
+    ).first()
+    if is_blacklisted:
+        raise credentials_exception
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -156,16 +168,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise credentials_exception
     except jwt.PyJWTError:
         raise credentials_exception
-        
+
     user = db.query(models.Profile).filter(models.Profile.username == username).first()
     if user is None:
         raise credentials_exception
     return user
 
+# ==========================================
+# ENDPOINT
+# ==========================================
 @app.get("/")
 def read_root():
     return {"message": "Backend API is Running!"}
 
+# Auth
 @app.post("/register", tags=["Auth"])
 def register(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(models.Profile).filter(models.Profile.username == user.username).first():
@@ -199,32 +215,61 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
+@app.post("/logout", tags=["Auth"])
+def logout(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_current_user)
+):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=400, detail="Token tidak valid")
+
+    blacklisted = models.TokenBlacklist(
+        token=token,
+        blacklisted_at=datetime.now(timezone.utc)
+    )
+    db.add(blacklisted)
+    db.commit()
+
+    return {"message": "Logout berhasil"}
+
+# ==========================================
+# User Profile
+# ==========================================
 @app.post("/profile", tags=["User Profile"])
-def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_user: models.Profile = Depends(get_current_user)):
-    
+def create_profile(
+    data: ProfileCreate,
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_current_user)
+):
     if current_user.full_name:
         raise HTTPException(status_code=400, detail="Profil sudah diisi")
 
     profile_dict = data.model_dump()
-    
+
     raw_pin = profile_dict.pop("pin")
     current_user.pin_hash = get_password_hash(raw_pin)
-    
     current_user.account_number = "".join([str(random.randint(0, 9)) for _ in range(10)])
-    
-    current_user.account_balance = 0.0 
+    current_user.account_balance = Decimal('0.00')
 
     today = date.today()
     date_of_birth = data.date_of_birth
-    calculated_age = today.year - date_of_birth.year - ((today.month, today.day) < (date_of_birth.month, date_of_birth.day))
+    calculated_age = today.year - date_of_birth.year - (
+        (today.month, today.day) < (date_of_birth.month, date_of_birth.day)
+    )
     current_user.age = calculated_age
-    
+
     for key, value in profile_dict.items():
+        if hasattr(value, 'value'):
+            value = value.value
         setattr(current_user, key, value)
-    
+
+    db.add(current_user)
     db.commit()
     db.refresh(current_user)
-    
+
     return {
         "status": "success",
         "message": "Profil berhasil dibuat",
@@ -232,7 +277,6 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db), current_u
             "account_number": current_user.account_number,
             "account_balance": current_user.account_balance,
             "age": current_user.age,
-            "balance": current_user.account_balance
         }
     }
 
@@ -258,100 +302,143 @@ def get_profile(current_user: models.Profile = Depends(get_current_user)):
         "consent_personalization": current_user.consent_personalization,
     }
 
-class ConsentUpdate(BaseModel):
-    consent_personalization: bool
+
 
 @app.patch("/profile/consent", tags=["User Profile"])
 def update_consent(data: ConsentUpdate, current_user: models.Profile = Depends(get_current_user), db: Session = Depends(get_db)):
     current_user.consent_personalization = data.consent_personalization
     db.commit()
-    return {"message": "Consent updated", "consent_personalization": current_user.consent_personalization}
+    return {
+        "message": "Consent updated", 
+        "consent_personalization": current_user.consent_personalization
+    }
 
-models.Base.metadata.create_all(bind=engine)
-
-# Tanpa ML
-@app.get("/recommendation", response_model=schemas.PromoResponse)
-def get_recommendation(current_user: models.Profile = Depends(get_current_user)):
+# ==========================================
+# Transaksi terbaru
+# ==========================================
+@app.get("/transactions/recent", tags=["User Profile"])
+def get_recent_transactions(
+    limit: int = Query(default=5, ge=1, le=20),
+    current_user: models.Profile = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    FR-02: Menampilkan aktivitas transaksi terbaru untuk halaman beranda.
+    Default 5 transaksi, maksimal 20. Frontend bisa kirim ?limit=10.
+    """
     if not current_user.full_name:
-        raise HTTPException(status_code=404, detail="Profil belum diisi, silakan isi profil terlebih dahulu")
+        raise HTTPException(status_code=404, detail="Profil belum diisi")
+ 
+    recent_trx = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.user_id == current_user.user_id)
+        .order_by(models.Transaction.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+ 
+    return {
+        "user_id": current_user.user_id,
+        "transactions": [
+            {
+                "trx_id": trx.trx_id,
+                "timestamp": str(trx.timestamp),
+                "category": trx.category,
+                "merchant_name": trx.merchant_name,
+                "transaction_method": trx.transaction_method,
+                "amount": trx.amount,
+            }
+            for trx in recent_trx
+        ]
+    }
 
-    if current_user.consent_personalization == False:
+# ==========================================
+# Rekomendasi & Insight
+# ==========================================
+@app.get("/recommendation", response_model=schemas.PromoResponse, tags=["Recommendation"])
+def get_recommendation(
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_current_user)
+):
+    if not current_user.full_name:
+        raise HTTPException(
+            status_code=404,
+            detail="Profil belum diisi, silakan isi profil terlebih dahulu"
+        )
+ 
+    if not current_user.consent_personalization:
         return schemas.PromoResponse(
             user_id=current_user.user_id,
-            message="User opted out of personalization",
+            message="Aktifkan personalisasi untuk mendapatkan rekomendasi yang relevan untukmu",
             promo_title=PROMO_CATALOG["general"]["title"],
-            promo_type=PROMO_CATALOG["general"]["type"]
+            promo_type=PROMO_CATALOG["general"]["type"],
+            generated_message=(
+                "Kamu belum mengaktifkan personalisasi. "
+                "Aktifkan sekarang agar kami bisa memberikan insight dan promo "
+                "yang sesuai dengan kebiasaan transaksimu."
+            ),
+            predicted_cta="Aktifkan Personalisasi",
+            cta_url="/profile/consent",
+            trigger_reason="Personalisasi belum aktif",
+            category_focus=None
         )
-    
-    pekerjaan = current_user.occupation.lower()
-    
-    if "mahasiswa" in pekerjaan or "pelajar" in pekerjaan:
-        cluster_id = 1
-    elif "fresh graduate" in pekerjaan or "karyawan" in pekerjaan:
-        cluster_id = 2
-    elif "pengusaha" in pekerjaan or "pns" in pekerjaan or "profesional" in pekerjaan:
-        cluster_id = 3
-    elif "freelance" in pekerjaan:
-        cluster_id = 4
-    else:
-        cluster_id = 2
-
-    selected_promo = PROMO_CATALOG[cluster_id]
-    
+ 
+    ml_result = db.query(models.ClusteringResult).filter(
+        models.ClusteringResult.user_id == current_user.user_id
+    ).first()
+ 
+    if not ml_result or ml_result.cluster_id not in PROMO_CATALOG:
+        return schemas.PromoResponse(
+            user_id=current_user.user_id,
+            message="Data ML belum siap, mengirim promo default",
+            promo_title=PROMO_CATALOG["general"]["title"],
+            promo_type=PROMO_CATALOG["general"]["type"],
+            generated_message="Tetap aman bertransaksi bersama CIMB.",
+            predicted_cta="Pelajari Selengkapnya",
+            cta_url=None,
+            trigger_reason=None,
+            category_focus=None
+        )
+ 
+    selected_promo = PROMO_CATALOG[ml_result.cluster_id]
+ 
     return schemas.PromoResponse(
         user_id=current_user.user_id,
         message=f"Success getting promo for {current_user.occupation}",
         promo_title=selected_promo["title"],
-        promo_type=selected_promo["type"]
+        promo_type=selected_promo["type"],
+        generated_message=getattr(ml_result, 'generated_message', selected_promo["title"]),
+        predicted_cta=getattr(ml_result, 'predicted_cta', "Ambil Promo"),
+        cta_url=None,
+        trigger_reason=getattr(ml_result, 'trigger_reason', None),
+        category_focus=getattr(ml_result, 'category_focus', None)
     )
 
-# Pakai ML
-# @app.get("/recommendation", response_model=schemas.PromoResponse)
-# def get_recommendation(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-#     user_profile = db.query(models.Profile).filter(models.Profile.user_id == current_user.id).first()
-    
-#     if not user_profile:
-#         raise HTTPException(status_code=404, detail="Profil belum diisi, silakan isi profil terlebih dahulu")
-
-#     if user_profile.consent_personalization == False:
-#         return schemas.PromoResponse(
-#             user_id=current_user.id,
-#             message="User opted out of personalization",
-#             promo_title=PROMO_CATALOG["general"]["title"],
-#             promo_type=PROMO_CATALOG["general"]["type"]
-#         )
-    
-#     ml_result = db.query(models.ClusteringResult).filter(models.ClusteringResult.user_id == current_user.id).first()
-    
-#     if not ml_result or ml_result.cluster_id not in PROMO_CATALOG:
-#         return schemas.PromoResponse(
-#             user_id=current_user.id,
-#             message="Data ML belum siap, mengirim promo default",
-#             promo_title=PROMO_CATALOG["general"]["title"],
-#             promo_type=PROMO_CATALOG["general"]["type"]
-#         )
-
-#     selected_promo = PROMO_CATALOG[ml_result.cluster_id]
-    
-#     return schemas.PromoResponse(
-#         user_id=current_user.id,
-#         message=f"Success getting promo for {user_profile.occupation}",
-#         promo_title=selected_promo["title"],
-#         promo_type=selected_promo["type"]
-#     )
-
+# ==========================================
+# Tracking
+# ==========================================
 @app.post("/api/v1/track", tags=["Tracking"], status_code=201)
 def track_user_interaction(
     interaction: schemas.InteractionCreate, 
     db: Session = Depends(get_db)
 ):
+    VALID_INTERACTION_TYPES = {"banner_click", "insight_view", "cta_click", "feature_click"}
+    if hasattr(interaction, 'interaction_type') and interaction.interaction_type:
+        if interaction.interaction_type not in VALID_INTERACTION_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"interaction_type tidak valid. Gunakan salah satu dari: {VALID_INTERACTION_TYPES}"
+            )
+        
     try:
         new_log = models.Interaction(
             user_id=interaction.user_id,
             session_id=interaction.session_id,
             timestamp=datetime.now(timezone.utc), 
             feature_accessed=interaction.feature_accessed,
-            action=interaction.action
+            action=interaction.action,
+
+            interaction_type=getattr(interaction, 'interaction_type', None)
         )
         
         db.add(new_log)
@@ -366,28 +453,60 @@ def track_user_interaction(
         
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Terjadi kesalahan saat mencatat log: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Terjadi kesalahan saat mencatat log: {str(e)}"
+        )
     
+# ==========================================
+# Admin Dashboard
+# ==========================================
 @app.get("/api/v1/admin/dashboard-stats", tags=["Admin Dashboard"])
-def get_dashboard_stats(db: Session = Depends(get_db)):
+def get_dashboard_stats(
+    start_date: str = Query(default=None, description="Filter dari tanggal (YYYY-MM-DD)"),
+    end_date: str   = Query(default=None, description="Filter sampai tanggal (YYYY-MM-DD)"),
+    db: Session = Depends(get_db)
+):
     try:
-        total_volume = db.query(func.sum(models.Transaction.amount)).scalar() or Decimal
+        dt_start = None
+        dt_end = None
+        if start_date:
+            dt_start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if end_date:
+            dt_end = datetime.strptime(end_date, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59, tzinfo=timezone.utc
+            )
+ 
+        trx_query = db.query(models.Transaction)
+        if dt_start:
+            trx_query = trx_query.filter(models.Transaction.timestamp >= dt_start)
+        if dt_end:
+            trx_query = trx_query.filter(models.Transaction.timestamp <= dt_end)
+ 
+        total_volume = db.query(
+            func.sum(models.Transaction.amount)
+        ).scalar() or Decimal('0')
+ 
         payment_methods = db.query(
             models.Transaction.transaction_method,
             func.count(models.Transaction.trx_id).label("total_transaksi"),
             func.sum(models.Transaction.amount).label("total_nominal")
         ).group_by(models.Transaction.transaction_method).all()
-
+ 
         category_stats = db.query(
             models.Transaction.category,
             func.count(models.Transaction.trx_id).label("total_transaksi"),
             func.sum(models.Transaction.amount).label("total_nominal")
-        ).group_by(models.Transaction.category).order_by(func.sum(models.Transaction.amount).desc()).all()
-
+        ).group_by(models.Transaction.category).order_by(
+            func.sum(models.Transaction.amount).desc()
+        ).all()
+ 
         total_users = db.query(func.count(models.Profile.user_id)).scalar() or 0
-        consent_true_count = db.query(func.count(models.Profile.user_id)).filter(models.Profile.consent_personalization == True).scalar() or 0
+        consent_true_count = db.query(func.count(models.Profile.user_id)).filter(
+            models.Profile.consent_personalization == True
+        ).scalar() or 0
         consent_rate = round((consent_true_count / total_users * 100), 2) if total_users > 0 else 0
-
+ 
         segment_transaction_stats = db.query(
             models.Profile.occupation,
             func.count(models.Transaction.trx_id).label("total_transaksi"),
@@ -396,11 +515,63 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
             models.Transaction, models.Profile.user_id == models.Transaction.user_id
         ).filter(
             models.Profile.consent_personalization == True
+        ).group_by(models.Profile.occupation).all()
+ 
+        cluster_transaction_stats = db.query(
+            models.ClusteringResult.cluster_id,
+            func.count(models.Transaction.trx_id).label("total_transaksi"),
+            func.sum(models.Transaction.amount).label("total_nominal")
+        ).join(
+            models.Transaction,
+            models.ClusteringResult.user_id == models.Transaction.user_id
+        ).group_by(models.ClusteringResult.cluster_id).all()
+ 
+        cta_conversions = db.query(
+            models.Interaction.feature_accessed,
+            func.count(models.Interaction.log_id).label("total_clicks")
+        ).filter(
+            models.Interaction.action == "click"
+        ).group_by(models.Interaction.feature_accessed).all()
+ 
+        engagement_query = db.query(
+            func.date(models.Interaction.timestamp).label("tanggal"),
+            func.count(models.Interaction.log_id).label("total_interaksi")
+        )
+        if dt_start:
+            engagement_query = engagement_query.filter(models.Interaction.timestamp >= dt_start)
+        if dt_end:
+            engagement_query = engagement_query.filter(models.Interaction.timestamp <= dt_end)
+        engagement_per_day = engagement_query.group_by(
+            func.date(models.Interaction.timestamp)
+        ).order_by(func.date(models.Interaction.timestamp)).all()
+ 
+        interaction_type_stats = db.query(
+            models.Interaction.interaction_type,
+            func.count(models.Interaction.log_id).label("total")
+        ).filter(
+            models.Interaction.interaction_type.isnot(None)
+        ).group_by(models.Interaction.interaction_type).all()
+ 
+        feature_by_cluster = db.query(
+            models.ClusteringResult.cluster_id,
+            models.Interaction.feature_accessed,
+            func.count(models.Interaction.log_id).label("total_clicks")
+        ).join(
+            models.Interaction,
+            models.ClusteringResult.user_id == models.Interaction.user_id
         ).group_by(
-            models.Profile.occupation
+            models.ClusteringResult.cluster_id,
+            models.Interaction.feature_accessed
+        ).order_by(
+            models.ClusteringResult.cluster_id,
+            func.count(models.Interaction.log_id).desc()
         ).all()
-
+ 
         return {
+            "filter": {
+                "start_date": start_date,
+                "end_date": end_date
+            },
             "summary": {
                 "total_users_registered": total_users,
                 "consent_rate_percentage": consent_rate,
@@ -409,27 +580,77 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
             "charts": {
                 "payment_methods_usage": [
                     {
-                        "method": row.transaction_method, 
-                        "count": row.total_transaksi, 
+                        "method": row.transaction_method,
+                        "count": row.total_transaksi,
                         "amount": row.total_nominal
                     } for row in payment_methods
                 ],
                 "spending_categories": [
                     {
-                        "category": row.category, 
-                        "count": row.total_transaksi, 
+                        "category": row.category,
+                        "count": row.total_transaksi,
                         "amount": row.total_nominal
                     } for row in category_stats
                 ],
                 "personalized_transactions_by_occupation": [
                     {
-                        "occupation": row.occupation, 
-                        "count": row.total_transaksi, 
+                        "occupation": row.occupation,
+                        "count": row.total_transaksi,
                         "amount": row.total_nominal
                     } for row in segment_transaction_stats
+                ],
+                "transactions_by_cluster": [
+                    {
+                        "cluster_id": row.cluster_id,
+                        "count": row.total_transaksi,
+                        "amount": row.total_nominal
+                    } for row in cluster_transaction_stats
+                ],
+                "cta_conversion_rates": [
+                    {
+                        "feature": row.feature_accessed,
+                        "total_clicks": row.total_clicks
+                    } for row in cta_conversions
+                ],
+                "engagement_per_day": [
+                    {
+                        "date": str(row.tanggal),
+                        "total_interactions": row.total_interaksi
+                    } for row in engagement_per_day
+                ],
+                "interaction_by_type": [
+                    {
+                        "interaction_type": row.interaction_type,
+                        "total": row.total
+                    } for row in interaction_type_stats
+                ],
+                "feature_usage_by_cluster": [
+                    {
+                        "cluster_id": row.cluster_id,
+                        "feature": row.feature_accessed,
+                        "total_clicks": row.total_clicks
+                    } for row in feature_by_cluster
                 ]
             }
         }
-
+ 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gagal memproses data dashboard finansial: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal memproses data dashboard finansial: {str(e)}"
+        )
+
+# ==========================================
+# Admin Tools
+# ==========================================
+@app.post("/admin/trigger-batch", tags=["Admin Tools"])
+def trigger_ml_pipeline(current_user: models.Profile = Depends(get_current_user)):
+    try:
+        from mock_ml import generate_dummy_ml #from _batch_predict import run_batch_perdiction 
+        generate_dummy_ml()
+        return {
+            "status": "success", 
+            "message": "ML Pipeline berhasil dijalankan secara manual."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline gagal: {str(e)}")

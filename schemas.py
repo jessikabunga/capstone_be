@@ -9,6 +9,11 @@ class PromoResponse(BaseModel):
     message: str
     promo_title: str
     promo_type: str
+    generated_message: Optional[str] = None
+    predicted_cta: Optional[str] = None
+    cta_url: Optional[str] = None
+    trigger_reason: Optional[str] = None
+    category_focus: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -27,6 +32,7 @@ class InteractionCreate(BaseModel):
     session_id: str
     feature_accessed: str
     action: str
+    interaction_type: Optional[str] = None
 
     class Config:
         from_attributes = True
