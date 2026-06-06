@@ -7,3 +7,4 @@ pydantic
 email-validator
 pandas
 joblib
+psycopg2-binary
