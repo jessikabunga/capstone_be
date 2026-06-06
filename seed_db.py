@@ -10,7 +10,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 models.Base.metadata.create_all(bind=engine)
 db: Session = SessionLocal()
 
-# ── 1. Profile ──────────────────────────────────────────────
+# Profile
 df_profile = pd.read_csv('dim_profile.csv')
 print(f"Seeding {len(df_profile)} users...")
 
@@ -44,7 +44,7 @@ for _, row in df_profile.iterrows():
 db.commit()
 print("✓ Profile selesai")
 
-# ── 2. Transaction ───────────────────────────────────────────
+# Transaction
 df_trx = pd.read_csv('fact_transactions.csv')
 print(f"Seeding {len(df_trx)} transactions...")
 
@@ -64,7 +64,7 @@ for _, row in df_trx.iterrows():
 db.commit()
 print("✓ Transaction selesai")
 
-# ── 3. Interaction ───────────────────────────────────────────
+# Interaction
 df_int = pd.read_csv('fact_interactions.csv')
 print(f"Seeding {len(df_int)} interactions...")
 
