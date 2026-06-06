@@ -56,13 +56,24 @@ class UserCreate(BaseModel):
             raise ValueError("Password harus mengandung huruf, angka, serta simbol (@$!%*#?&)")
         return v
 
+# class OccupationChoice(str, Enum):
+#     pelajar_mahasiswa = "Pelajar / Mahasiswa"
+#     fresh_graduate = "Fresh Graduate"
+#     karyawan_swasta = "Karyawan Swasta"
+#     pns = "PNS"
+#     pengusaha = "Pengusaha / Wirausaha"
+#     profesional = "Profesional"
+#     freelancer = "Freelancer"
+
+# Dataset Shinta
 class OccupationChoice(str, Enum):
-    pelajar_mahasiswa = "Pelajar / Mahasiswa"
+    student = "Student"
     fresh_graduate = "Fresh Graduate"
-    karyawan_swasta = "Karyawan Swasta"
-    pns = "PNS"
-    pengusaha = "Pengusaha / Wirausaha"
-    profesional = "Profesional"
+    private_employee = "Private Employee"
+    civil_servant = "Civil Servant"
+    doctor = "Doctor"
+    lawyer = "Lawyer"
+    entrepreneur = "Entrepreneur"
     freelancer = "Freelancer"
 
 class ProfileCreate(BaseModel):
@@ -185,6 +196,14 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+def get_admin_user(current_user: models.Profile = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Akses ditolak. Hanya admin yang diizinkan."
+        )
+    return current_user
 
 # ==========================================
 # ENDPOINT
@@ -410,14 +429,15 @@ def process_transfer(
 
     new_trx = models.Transaction(
         user_id=current_user.user_id,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),
         category=category,
         merchant_name=data.recipient_name,
         transaction_method="Transfer",
         amount=data.amount,
         days_ago=0,
-        week_status="Weekday" if datetime.now().weekday() < 5 else "Weekend"
+        week_status="Weekday" if datetime.now(timezone.utc).weekday() < 5 else "Weekend"
     )
+    db.add(current_user)
     db.add(new_trx)
     db.commit()
 
@@ -449,14 +469,15 @@ def process_transaction(
 
     new_trx = models.Transaction(
         user_id=current_user.user_id,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),
         category=data.category,
         merchant_name=data.merchant_name,
         transaction_method=data.transaction_method,
         amount=data.amount,
         days_ago=0,
-        week_status="Weekday" if datetime.now().weekday() < 5 else "Weekend"
+        week_status="Weekday" if datetime.now(timezone.utc).weekday() < 5 else "Weekend"
     )
+    db.add(current_user)
     db.add(new_trx)
     db.commit()
 
@@ -540,7 +561,6 @@ def decode_qr(payload: str, current_user: models.Profile = Depends(get_current_u
             detail="Merchant QRIS tidak terdaftar atau tidak valid!"
         )
     return QRIS_MERCHANTS[payload]
-
 
 
 # ==========================================
@@ -656,7 +676,8 @@ def track_user_interaction(
 def get_dashboard_stats(
     start_date: str = Query(default=None, description="Filter dari tanggal (YYYY-MM-DD)"),
     end_date: str   = Query(default=None, description="Filter sampai tanggal (YYYY-MM-DD)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_admin_user) 
 ):
     try:
         dt_start = None
@@ -835,10 +856,12 @@ def get_dashboard_stats(
 # Admin Tools
 # ==========================================
 @app.post("/admin/trigger-batch", tags=["Admin Tools"])
-def trigger_ml_pipeline(current_user: models.Profile = Depends(get_current_user)):
+def trigger_ml_pipeline(
+    current_user: models.Profile = Depends(get_admin_user)
+):
     try:
-        from mock_ml import generate_dummy_ml #from _batch_predict import run_batch_perdiction 
-        generate_dummy_ml()
+        from batch_predict import run_batch_prediction
+        run_batch_prediction()
         return {
             "status": "success", 
             "message": "ML Pipeline berhasil dijalankan secara manual."
