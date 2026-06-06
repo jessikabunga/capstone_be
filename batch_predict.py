@@ -112,17 +112,19 @@ def run_batch_prediction():
             
             raw = row.get('trigger_reason', '')
             trigger_reason = str(raw) if pd.notna(raw) and str(raw).strip() not in ('', 'nan') else None
-            
+
             raw_msg = row.get('generated_message', '')
 
-            if has_generated_message and str(row['generated_message']).strip():
-                msg = str(row['generated_message'])
+            if has_generated_message and str(raw_msg).strip() not in ('', 'nan', 'None'):
+                msg = str(raw_msg).strip()
             else:
                 msg = fallback_map.get(
                     fav_category,
                     "Nikmati kemudahan transaksi harian dengan promo spesial pilihan CIMB untuk Anda."
                 )
 
+            predicted_cta = str(row['predicted_cta_batch']).strip() or "Ambil Promo"
+            
             existing = db.query(models.ClusteringResult).filter(
                 models.ClusteringResult.user_id == user_id
             ).first()

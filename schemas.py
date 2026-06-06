@@ -28,8 +28,8 @@ class TransactionResponse(BaseModel):
         from_attributes = True
 
 class InteractionCreate(BaseModel):
-    user_id: Optional[int] = None
-    session_id: str
+    user_id: int
+    session_id: int
     feature_accessed: str
     action: str
     interaction_type: Optional[str] = None
@@ -46,4 +46,4 @@ class TransactionCreate(BaseModel):
     notes: Optional[str] = None
 
     class Config:
-        from_attributes = True
+        from_attributes = True

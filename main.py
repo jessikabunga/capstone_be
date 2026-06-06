@@ -158,10 +158,10 @@ async def validation_exception_handler(request, exc):
 # 2 = Established Professional
 # 3 = Freelancer
 PROMO_CATALOG = {
-    0: {"title": "Diskon 50% QRIS Kopi Kenangan & Mie Gacoan!", "type": "Promo #1"},
-    1: {"title": "Cashback Top Up E-Wallet s/d Rp 50.000", "type": "Promo #2"},
-    2: {"title": "Penawaran Spesial: Limit Kartu Kredit s/d 50 Juta", "type": "Promo #3"},
-    3: {"title": "Bebas Biaya Transfer Antar Bank Selama Sebulan!", "type": "Promo #1"},
+    0: {"title": "Cashback Top Up E-Wallet s/d Rp 50.000",        "type": "Promo #2"}, 
+    1: {"title": "Bebas Biaya Transfer Antar Bank Selama Sebulan!", "type": "Promo #1"},
+    2: {"title": "Diskon 50% QRIS Kopi Kenangan & Mie Gacoan!",   "type": "Promo #1"},
+    3: {"title": "Penawaran Spesial: Limit Kartu Kredit s/d 50 Juta", "type": "Promo #3"}, 
     "general": {"title": "Waspada Penipuan! Jaga Kerahasiaan PIN Anda", "type": "Non-Promo"}
 }
 
