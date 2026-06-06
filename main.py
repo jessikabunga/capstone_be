@@ -107,6 +107,18 @@ class ProfileCreate(BaseModel):
 class ConsentUpdate(BaseModel):
     consent_personalization: bool
 
+class AccountValidationRequest(BaseModel):
+    bank_name: str
+    account_number: str
+
+class TransferRequest(BaseModel):
+    recipient_name: str
+    recipient_bank: str
+    recipient_account: str
+    amount: Decimal
+    notes: str | None = None
+    pin: str
+
 # ==========================================
 # APP Init   
 # ==========================================
@@ -285,6 +297,7 @@ def get_profile(current_user: models.Profile = Depends(get_current_user)):
     if not current_user.full_name:
         raise HTTPException(status_code=404, detail="Profil belum diisi")
     return {
+        "user_id": current_user.user_id,
         "full_name": current_user.full_name,
         "national_id": current_user.national_id,
         "place_of_birth": current_user.place_of_birth,
@@ -351,6 +364,184 @@ def get_recent_transactions(
             for trx in recent_trx
         ]
     }
+
+@app.post("/validate-account", tags=["User Profile"])
+def validate_account(
+    data: AccountValidationRequest,
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_current_user)
+):
+    bank_name_clean = data.bank_name.strip().upper()
+    acc_num = data.account_number.strip()
+
+    if bank_name_clean == "CIMB NIAGA":
+        profile = db.query(models.Profile).filter(models.Profile.account_number == acc_num).first()
+        if not profile:
+            raise HTTPException(status_code=400, detail="Nomor rekening CIMB Niaga tidak ditemukan!")
+        return {"account_name": profile.full_name}
+    else:
+        bank_label = data.bank_name.upper().replace("BANK ", "")
+        return {"account_name": f"Penerima {bank_label} ({acc_num[-4:]})"}
+
+@app.post("/transfer", tags=["User Profile"])
+def process_transfer(
+    data: TransferRequest,
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_current_user)
+):
+    if not current_user.pin_hash:
+        raise HTTPException(status_code=400, detail="PIN belum diatur di profil Anda!")
+    
+    if not verify_password(data.pin, current_user.pin_hash):
+        raise HTTPException(status_code=400, detail="PIN yang Anda masukkan salah!")
+
+    if current_user.account_balance < data.amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Saldo Anda tidak mencukupi untuk melakukan transaksi ini."
+        )
+
+    current_user.account_balance -= data.amount
+
+    bank_lower = data.recipient_bank.lower()
+    category = "Transfer"
+    if "pay" in bank_lower or "wallet" in bank_lower or bank_lower in ["gopay", "ovo", "dana", "linkaja", "shopeepay"]:
+        category = "E-Wallet"
+
+    new_trx = models.Transaction(
+        user_id=current_user.user_id,
+        timestamp=datetime.now(),
+        category=category,
+        merchant_name=data.recipient_name,
+        transaction_method="Transfer",
+        amount=data.amount,
+        days_ago=0,
+        week_status="Weekday" if datetime.now().weekday() < 5 else "Weekend"
+    )
+    db.add(new_trx)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Transfer berhasil",
+        "new_balance": float(current_user.account_balance)
+    }
+
+@app.post("/transaction", tags=["Transaction"])
+def process_transaction(
+    data: schemas.TransactionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.Profile = Depends(get_current_user)
+):
+    if not current_user.pin_hash:
+        raise HTTPException(status_code=400, detail="PIN belum diatur di profil Anda!")
+    
+    if not verify_password(data.pin, current_user.pin_hash):
+        raise HTTPException(status_code=400, detail="PIN yang Anda masukkan salah!")
+
+    if current_user.account_balance < data.amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Saldo Anda tidak mencukupi untuk melakukan transaksi ini."
+        )
+
+    current_user.account_balance -= data.amount
+
+    new_trx = models.Transaction(
+        user_id=current_user.user_id,
+        timestamp=datetime.now(),
+        category=data.category,
+        merchant_name=data.merchant_name,
+        transaction_method=data.transaction_method,
+        amount=data.amount,
+        days_ago=0,
+        week_status="Weekday" if datetime.now().weekday() < 5 else "Weekend"
+    )
+    db.add(new_trx)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Transaksi berhasil",
+        "new_balance": float(current_user.account_balance)
+    }
+
+QRIS_MERCHANTS = {
+    "MRC_GOJEK": {
+        "merchant_id": "MRC_GOJEK",
+        "merchant_name": "Gojek",
+        "category": "Transport & Mobility",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_GRAB": {
+        "merchant_id": "MRC_GRAB",
+        "merchant_name": "Grab",
+        "category": "Transport & Mobility",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_STARBUCKS": {
+        "merchant_id": "MRC_STARBUCKS",
+        "merchant_name": "Starbucks",
+        "category": "Food & Beverage",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_JANJI_JIWA": {
+        "merchant_id": "MRC_JANJI_JIWA",
+        "merchant_name": "Janji Jiwa",
+        "category": "Food & Beverage",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_KOPI_KENANGAN": {
+        "merchant_id": "MRC_KOPI_KENANGAN",
+        "merchant_name": "Kopi Kenangan",
+        "category": "Food & Beverage",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_MCD": {
+        "merchant_id": "MRC_MCD",
+        "merchant_name": "McD",
+        "category": "Food & Beverage",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_INDOMARET": {
+        "merchant_id": "MRC_INDOMARET",
+        "merchant_name": "Indomaret",
+        "category": "Retail & Convenience",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_ALFAMART": {
+        "merchant_id": "MRC_ALFAMART",
+        "merchant_name": "Alfamart",
+        "category": "Retail & Convenience",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    },
+    "MRC_FAMILYMART": {
+        "merchant_id": "MRC_FAMILYMART",
+        "merchant_name": "FamilyMart",
+        "category": "Retail & Convenience",
+        "transaction_method": "QRIS",
+        "qr_version": "1.0"
+    }
+}
+
+@app.get("/qr/decode/{payload}", tags=["Transaction"])
+def decode_qr(payload: str, current_user: models.Profile = Depends(get_current_user)):
+    if payload not in QRIS_MERCHANTS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Merchant QRIS tidak terdaftar atau tidak valid!"
+        )
+    return QRIS_MERCHANTS[payload]
+
+
 
 # ==========================================
 # Rekomendasi & Insight

@@ -36,3 +36,14 @@ class InteractionCreate(BaseModel):
 
     class Config:
         from_attributes = True
+
+class TransactionCreate(BaseModel):
+    category: str
+    merchant_name: str
+    transaction_method: str
+    amount: Decimal
+    pin: str
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
