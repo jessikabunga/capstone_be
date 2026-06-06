@@ -1,12 +1,9 @@
 fastapi
 uvicorn
 sqlalchemy
-psycopg2-binary
-pandas
-pydantic
-passlib
-bcrypt
-python-jose
-joblib
-scikit-learn
+passlib[bcrypt]
 PyJWT
+pydantic
+email-validator
+pandas
+joblib
