@@ -9,3 +9,4 @@ bcrypt
 python-jose
 joblib
 scikit-learn
+PyJWT
