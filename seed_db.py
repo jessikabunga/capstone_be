@@ -11,7 +11,11 @@ models.Base.metadata.create_all(bind=engine)
 db: Session = SessionLocal()
 
 # Profile
-df_profile = pd.read_csv('dim_profile.csv')
+df_profile = pd.read_csv('dim_profile.csv', dtype={
+    'phone_number':   str,
+    'national_id':    str,
+    'account_number': str
+})
 print(f"Seeding {len(df_profile)} users...")
 
 for _, row in df_profile.iterrows():
