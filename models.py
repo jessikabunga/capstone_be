@@ -27,6 +27,7 @@ class Profile(Base):
 
     is_admin = Column(Boolean, default=False)
     segment_ground_truth = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)
 
 class ClusteringResult(Base):
     __tablename__ = "clustering_results"

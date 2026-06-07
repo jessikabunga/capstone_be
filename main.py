@@ -131,6 +131,43 @@ class TransferRequest(BaseModel):
     notes: str | None = None
     pin: str
 
+class ProfileUpdate(BaseModel):
+    phone_number:   str | None = Field(
+        default=None,
+        pattern=r"^\d{10,14}$",
+        description="Nomor HP baru (10-14 digit angka)"
+    )
+    street_address: str | None = Field(
+        default=None,
+        min_length=10,
+        max_length=255
+    )
+    city:           str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=50
+    )
+    province:       str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=50
+    )
+
+    @field_validator('phone_number')
+    @classmethod
+    def check_not_all_same_digits(cls, v):
+        if v is not None and len(set(v)) == 1:
+            raise ValueError("Nomor HP tidak boleh berisi angka yang sama semua")
+        return v
+    
+class DeleteAccountRequest(BaseModel):
+    pin: str = Field(
+        min_length=6,
+        max_length=6,
+        pattern=r"^\d{6}$",
+        description="Konfirmasi PIN untuk hapus akun"
+    )
+
 # ==========================================
 # APP Init   
 # ==========================================
@@ -193,7 +230,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except jwt.PyJWTError:
         raise credentials_exception
 
-    user = db.query(models.Profile).filter(models.Profile.username == username).first()
+    user = db.query(models.Profile).filter(
+        models.Profile.username == username, 
+        models.Profile.is_active == True).first()
     if user is None:
         raise credentials_exception
     return user
@@ -335,7 +374,44 @@ def get_profile(current_user: models.Profile = Depends(get_current_user)):
         "consent_personalization": current_user.consent_personalization,
     }
 
+@app.patch("/profile", tags=["User Profile"])
+def update_profile(
+    data: ProfileUpdate,
+    current_user: models.Profile = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.full_name:
+        raise HTTPException(
+            status_code=404,
+            detail="Profil belum diisi, gunakan POST /profile terlebih dahulu"
+        )
 
+    update_data = data.model_dump(exclude_none=True)
+
+    if not update_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak ada data yang diupdate. Kirim minimal satu field."
+        )
+
+    for key, value in update_data.items():
+        setattr(current_user, key, value)
+
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "status": "success",
+        "message": "Profil berhasil diperbarui",
+        "updated_fields": list(update_data.keys()),
+        "data": {
+            "phone_number":   current_user.phone_number,
+            "street_address": current_user.street_address,
+            "city":           current_user.city,
+            "province":       current_user.province,
+        }
+    }
 
 @app.patch("/profile/consent", tags=["User Profile"])
 def update_consent(data: ConsentUpdate, current_user: models.Profile = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -344,6 +420,33 @@ def update_consent(data: ConsentUpdate, current_user: models.Profile = Depends(g
     return {
         "message": "Consent updated", 
         "consent_personalization": current_user.consent_personalization
+    }
+
+@app.delete("/profile", tags=["User Profile"])
+def delete_account(
+    data: DeleteAccountRequest,
+    current_user: models.Profile = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.pin_hash:
+        raise HTTPException(
+            status_code=400,
+            detail="PIN belum diatur. Lengkapi profil terlebih dahulu."
+        )
+
+    if not verify_password(data.pin, current_user.pin_hash):
+        raise HTTPException(
+            status_code=400,
+            detail="PIN salah. Penghapusan akun dibatalkan."
+        )
+
+    current_user.is_active = False
+    db.add(current_user)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Akun berhasil dinonaktifkan. Data Anda tetap tersimpan sesuai kebijakan privasi."
     }
 
 # ==========================================
