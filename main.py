@@ -15,10 +15,11 @@ from fastapi.middleware.cors import CORSMiddleware
 import random
 from decimal import Decimal
 from sqlalchemy import func
+import os
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-SECRET_KEY = "capstone_kelompok_3"
-ALGORITHM = "HS256"
+SECRET_KEY = os.getenv("SECRET_KEY", "capstone_kelompok_3")
+ALGORITHM  = os.getenv("ALGORITHM", "HS256")
 
 def get_password_hash(password):
     return pwd_context.hash(password)
