@@ -350,7 +350,11 @@ def update_consent(data: ConsentUpdate, current_user: models.Profile = Depends(g
 # ==========================================
 @app.get("/transactions/recent", tags=["User Profile"])
 def get_recent_transactions(
-    limit: int = Query(default=5, ge=1, le=20),
+    limit: int = Query(default=5, ge=1, le=100),
+    transaction_method: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    exclude_method: str | None = Query(default=None),
+    exclude_category: str | None = Query(default=None),
     current_user: models.Profile = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -361,10 +365,18 @@ def get_recent_transactions(
     if not current_user.full_name:
         raise HTTPException(status_code=404, detail="Profil belum diisi")
  
+    query = db.query(models.Transaction).filter(models.Transaction.user_id == current_user.user_id)
+    if transaction_method:
+        query = query.filter(models.Transaction.transaction_method == transaction_method)
+    if category:
+        query = query.filter(models.Transaction.category == category)
+    if exclude_method:
+        query = query.filter(models.Transaction.transaction_method != exclude_method)
+    if exclude_category:
+        query = query.filter(models.Transaction.category != exclude_category)
+ 
     recent_trx = (
-        db.query(models.Transaction)
-        .filter(models.Transaction.user_id == current_user.user_id)
-        .order_by(models.Transaction.timestamp.desc())
+        query.order_by(models.Transaction.timestamp.desc())
         .limit(limit)
         .all()
     )
@@ -379,6 +391,8 @@ def get_recent_transactions(
                 "merchant_name": trx.merchant_name,
                 "transaction_method": trx.transaction_method,
                 "amount": trx.amount,
+                "recipient_bank": trx.recipient_bank,
+                "recipient_account": trx.recipient_account,
             }
             for trx in recent_trx
         ]
@@ -435,7 +449,9 @@ def process_transfer(
         transaction_method="Transfer",
         amount=data.amount,
         days_ago=0,
-        week_status="Weekday" if datetime.now(timezone.utc).weekday() < 5 else "Weekend"
+        week_status="Weekday" if datetime.now().weekday() < 5 else "Weekend",
+        recipient_bank=data.recipient_bank,
+        recipient_account=data.recipient_account
     )
     db.add(current_user)
     db.add(new_trx)
@@ -475,7 +491,9 @@ def process_transaction(
         transaction_method=data.transaction_method,
         amount=data.amount,
         days_ago=0,
-        week_status="Weekday" if datetime.now(timezone.utc).weekday() < 5 else "Weekend"
+        week_status="Weekday" if datetime.now().weekday() < 5 else "Weekend",
+        recipient_bank=data.recipient_bank,
+        recipient_account=data.recipient_account
     )
     db.add(current_user)
     db.add(new_trx)
@@ -486,6 +504,67 @@ def process_transaction(
         "message": "Transaksi berhasil",
         "new_balance": float(current_user.account_balance)
     }
+
+# ==========================================
+# Saved Contacts
+# ==========================================
+@app.get("/api/v1/saved-contacts", tags=["Saved Contacts"])
+def get_saved_contacts(
+    category: str | None = Query(default=None),
+    exclude_category: str | None = Query(default=None),
+    current_user: models.Profile = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.SavedContact).filter(models.SavedContact.user_id == current_user.user_id)
+    if category:
+        query = query.filter(models.SavedContact.category == category)
+    if exclude_category:
+        query = query.filter(models.SavedContact.category != exclude_category)
+        
+    contacts = query.order_by(models.SavedContact.name.asc()).all()
+    return contacts
+
+@app.post("/api/v1/saved-contacts", tags=["Saved Contacts"], status_code=201)
+def create_saved_contact(
+    data: schemas.SavedContactCreate,
+    current_user: models.Profile = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(models.SavedContact).filter(
+        models.SavedContact.user_id == current_user.user_id,
+        models.SavedContact.account_number == data.account_number,
+        models.SavedContact.category == data.category
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Kontak ini sudah ada di daftar favorit Anda!")
+        
+    new_contact = models.SavedContact(
+        user_id=current_user.user_id,
+        name=data.name,
+        account_number=data.account_number,
+        bank_name=data.bank_name,
+        category=data.category
+    )
+    db.add(new_contact)
+    db.commit()
+    db.refresh(new_contact)
+    return new_contact
+
+@app.delete("/api/v1/saved-contacts/{contact_id}", tags=["Saved Contacts"])
+def delete_saved_contact(
+    contact_id: int,
+    current_user: models.Profile = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    contact = db.query(models.SavedContact).filter(
+        models.SavedContact.id == contact_id,
+        models.SavedContact.user_id == current_user.user_id
+    ).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Kontak favorit tidak ditemukan!")
+    db.delete(contact)
+    db.commit()
+    return {"message": "Kontak favorit berhasil dihapus"}
 
 QRIS_MERCHANTS = {
     "MRC_GOJEK": {

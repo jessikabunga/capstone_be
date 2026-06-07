@@ -28,8 +28,8 @@ class TransactionResponse(BaseModel):
         from_attributes = True
 
 class InteractionCreate(BaseModel):
-    user_id: int
-    session_id: int
+    user_id: Optional[int] = None
+    session_id: str
     feature_accessed: str
     action: str
     interaction_type: Optional[str] = None
@@ -44,6 +44,25 @@ class TransactionCreate(BaseModel):
     amount: Decimal
     pin: str
     notes: Optional[str] = None
+    recipient_bank: Optional[str] = None
+    recipient_account: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class SavedContactCreate(BaseModel):
+    name: str
+    account_number: str
+    bank_name: Optional[str] = None
+    category: str
+
+class SavedContactResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    account_number: str
+    bank_name: Optional[str] = None
+    category: str
 
     class Config:
         from_attributes = True

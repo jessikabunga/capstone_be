@@ -50,10 +50,10 @@ class Transaction(Base):
     merchant_name = Column(String(100))
     transaction_method = Column(String(50))
     amount = Column(Numeric(15, 2))
-    # days_ago = Column(Integer)
-    # week_status = Column(String(50))
-    days_ago    = Column(Integer, nullable=True) # Shinta
-    week_status = Column(String,  nullable=True) # Shinta
+    days_ago = Column(Integer)
+    week_status = Column(String(50))
+    recipient_bank = Column(String(100), nullable=True)
+    recipient_account = Column(String(50), nullable=True)
 
 class Interaction(Base):
     __tablename__ = "fact_interactions"
@@ -72,3 +72,13 @@ class TokenBlacklist(Base):
     id         = Column(Integer, primary_key=True, index=True)
     token      = Column(String, unique=True, nullable=False, index=True)
     blacklisted_at = Column(DateTime(timezone=True), nullable=False)
+
+class SavedContact(Base):
+    __tablename__ = "saved_contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("dim_profile.user_id"))
+    name = Column(String(100), nullable=False)
+    account_number = Column(String(50), nullable=False)
+    bank_name = Column(String(100), nullable=True)
+    category = Column(String(50), nullable=False)  # 'Transfer' or 'TopUp' / other provider types
