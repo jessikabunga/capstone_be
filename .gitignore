@@ -2,3 +2,7 @@ venv/
 __pycache__/
 *.csv
 !dim_profile.csv
+!fact_interactions.csv
+!fact_transactions.csv
+!single_customer_view.csv
+!single_customer_view_enriched.csv
