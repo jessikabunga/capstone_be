@@ -103,20 +103,24 @@ def run_batch_prediction():
         return
 
     # ===========================================================================
-    # 3. VALIDASI KOLOM
+    # 3. VALIDASI KOLOM + ISI NaN
     # ===========================================================================
     missing_clustering = [c for c in features_for_clustering if c not in scv_df.columns]
     missing_rf         = [c for c in rf_features if c not in scv_df.columns]
 
-    if missing_clustering:
-        print(f"ERROR: Kolom KMeans tidak ditemukan di data: {missing_clustering}")
-        db.close()
-        return
+    # Tambahkan kolom yang hilang dengan nilai 0
+    for col in missing_clustering + missing_rf:
+        if col not in scv_df.columns:
+            scv_df[col] = 0
+            print(f"INFO: Kolom '{col}' tidak ditemukan, diisi 0.")
 
-    if missing_rf:
-        print(f"ERROR: Kolom RF tidak ditemukan di data: {missing_rf}")
-        db.close()
-        return
+    # Isi NaN yang tersisa dengan median (numerik) atau 0
+    for col in features_for_clustering + rf_features:
+        if scv_df[col].isnull().any():
+            if scv_df[col].dtype in ['float64', 'int64']:
+                scv_df[col] = scv_df[col].fillna(scv_df[col].median())
+            else:
+                scv_df[col] = scv_df[col].fillna(0)
 
     # ===========================================================================
     # 4. PREDIKSI CLUSTER (K-MEANS) & CTA (RANDOM FOREST)
