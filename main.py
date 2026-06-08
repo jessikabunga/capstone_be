@@ -84,8 +84,8 @@ class ProfileCreate(BaseModel):
         pattern=r"^[a-zA-Z\s.,]+$",
         description="Nama lengkap beserta gelar jika ada"
     )
-    place_of_birth: str
-    date_of_birth: date 
+    birth_place: str
+    birth_date: date 
     national_id: str = Field(pattern=r"^\d{16}$")
     occupation: OccupationChoice
     phone_number: str = Field(pattern=r"^\d{10,14}$")
@@ -102,7 +102,7 @@ class ProfileCreate(BaseModel):
     )
 
     
-    @field_validator('date_of_birth')
+    @field_validator('birth_date')
     @classmethod
     def check_birth_date(cls, v):
         if v > date.today():
@@ -326,9 +326,9 @@ def create_profile(
     current_user.account_balance = Decimal('0.00')
 
     today = date.today()
-    date_of_birth = data.date_of_birth
-    calculated_age = today.year - date_of_birth.year - (
-        (today.month, today.day) < (date_of_birth.month, date_of_birth.day)
+    birth_date = data.birth_date
+    calculated_age = today.year - birth_date.year - (
+        (today.month, today.day) < (birth_date.month, birth_date.day)
     )
     current_user.age = calculated_age
 
@@ -359,8 +359,8 @@ def get_profile(current_user: models.Profile = Depends(get_current_user)):
         "user_id": current_user.user_id,
         "full_name": current_user.full_name,
         "national_id": current_user.national_id,
-        "place_of_birth": current_user.place_of_birth,
-        "date_of_birth": str(current_user.date_of_birth) if current_user.date_of_birth else None,
+        "birth_place": current_user.birth_place,
+        "birth_date": str(current_user.birth_date) if current_user.birth_date else None,
         "email_address": current_user.email_address,
         "phone_number": current_user.phone_number,
         "occupation": current_user.occupation,
