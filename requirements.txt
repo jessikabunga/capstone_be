@@ -9,6 +9,6 @@ python-multipart
 pydantic[email]
 pandas
 joblib
-scikit-learn
+scikit-learn==1.6.1
 email-validator
 python-jose
