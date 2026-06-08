@@ -3,7 +3,6 @@ from typing import Optional
 from decimal import Decimal
 from datetime import datetime
 
-# Skema untuk respons API Recommendation
 class PromoResponse(BaseModel):
     user_id: int
     message: str

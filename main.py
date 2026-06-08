@@ -323,7 +323,7 @@ def create_profile(
     raw_pin = profile_dict.pop("pin")
     current_user.pin_hash = get_password_hash(raw_pin)
     current_user.account_number = "".join([str(random.randint(0, 9)) for _ in range(10)])
-    current_user.account_balance = Decimal('0.00')
+    current_user.account_balance = Decimal('5000000')
 
     today = date.today()
     birth_date = data.birth_date
