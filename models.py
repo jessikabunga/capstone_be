@@ -22,7 +22,7 @@ class Profile(Base):
     age = Column(Integer)
     occupation = Column(String(100))
     monthly_income = Column(Numeric(15,2), default=0.00)
-    account_balance = Column(Numeric(15,2), default=0.00)
+    account_balance = Column(Numeric(15,2), default=5000000)
     consent_personalization = Column(Boolean, default=False)
 
     is_admin = Column(Boolean, default=False)
