@@ -12,15 +12,7 @@ def build_scv_from_db(db: Session) -> pd.DataFrame:
         models.Profile.user_id,
         models.Profile.occupation,
         models.Profile.monthly_income,
-        models.Profile.age,
-        func.count(models.Transaction.trx_id).label('total_trx'),
-        func.sum(models.Transaction.amount).label('total_spending'),
-    ).join(
-        models.Transaction, models.Profile.user_id == models.Transaction.user_id
-    ).group_by(
-        models.Profile.user_id,
-        models.Profile.occupation,
-        models.Profile.monthly_income,
+        models.Profile.account_balance,
         models.Profile.age,
     ).all()
 
@@ -29,7 +21,26 @@ def build_scv_from_db(db: Session) -> pd.DataFrame:
 
     df = pd.DataFrame([r._asdict() for r in rows])
 
-    fav_cat_rows = db.query(
+    trx_rows = db.query(
+        models.Transaction.user_id,
+        func.count(models.Transaction.trx_id).label('total_trx'),
+        func.sum(models.Transaction.amount).label('total_spend'),
+    ).group_by(models.Transaction.user_id).all()
+
+    if trx_rows:
+        trx_df = pd.DataFrame([r._asdict() for r in trx_rows])
+        df = df.merge(trx_df, on='user_id', how='left')
+    else:
+        df['total_trx']   = 0
+        df['total_spend'] = 0
+
+    df['total_trx']   = df['total_trx'].fillna(0)
+    df['total_spend'] = df['total_spend'].fillna(0).astype(float)
+    df['monthly_income']   = df['monthly_income'].fillna(0).astype(float)
+    df['account_balance']  = df['account_balance'].fillna(0).astype(float)
+    df['age']              = df['age'].fillna(25).astype(int)
+
+    fav_rows = db.query(
         models.Transaction.user_id,
         models.Transaction.category,
         func.count(models.Transaction.trx_id).label('cnt')
@@ -38,14 +49,16 @@ def build_scv_from_db(db: Session) -> pd.DataFrame:
         models.Transaction.category
     ).all()
 
-    fav_df = pd.DataFrame([r._asdict() for r in fav_cat_rows])
-    if not fav_df.empty:
+    if fav_rows:
+        fav_df = pd.DataFrame([r._asdict() for r in fav_rows])
         fav_df = fav_df.sort_values('cnt', ascending=False).drop_duplicates('user_id')
         fav_df = fav_df.rename(columns={'category': 'fav_category'})[['user_id', 'fav_category']]
         df = df.merge(fav_df, on='user_id', how='left')
-        df['fav_category'] = df['fav_category'].fillna('Retail & Convenience')
-    else:
-        df['fav_category'] = 'Retail & Convenience'
+    
+    df['fav_category'] = df.get('fav_category', pd.Series(['Retail & Convenience'] * len(df)))
+    df['fav_category'] = df['fav_category'].fillna('Retail & Convenience')
+
+    df['spend_to_income'] = df['total_spend'] / (df['monthly_income'] + 1)
 
     return df
 
@@ -55,7 +68,7 @@ def run_batch_prediction():
     db: Session = SessionLocal()
 
     # ===========================================================================
-    # 1. LOAD ML ARTIFACTS (.pkl)
+    # 1. LOAD ML ARTIFACTS
     # ===========================================================================
     try:
         scaler                  = joblib.load('scaler_clustering.pkl')
@@ -65,9 +78,8 @@ def run_batch_prediction():
         rf_features             = joblib.load('feature_columns.pkl')
         features_for_clustering = joblib.load('clustering_feature_cols.pkl')
 
-        print("Berhasil memuat semua model ML dan feature list.")
-        print(f"  Feature clustering : {len(features_for_clustering)} kolom")
-        print(f"  Feature RF         : {len(rf_features)} kolom")
+        print(f"Feature clustering : {len(features_for_clustering)} kolom")
+        print(f"Feature RF         : {len(rf_features)} kolom")
 
     except FileNotFoundError as e:
         print(f"ERROR: File .pkl tidak ditemukan. Detail: {str(e)}")
@@ -75,97 +87,86 @@ def run_batch_prediction():
         return
 
     # ===========================================================================
-    # 2. BACA DATA NASABAH — CSV (seed) + DB (user baru API)
+    # 2. BACA DATA — CSV seed + user baru dari DB
     # ===========================================================================
     csv_df = pd.DataFrame()
     try:
-        csv_df = pd.read_csv('single_customer_view_enriched.csv')
-        print(f"Berhasil membaca {len(csv_df)} nasabah dari CSV seed.")
+        csv_df = pd.read_csv('single_customer_view.csv')
+        print(f"CSV seed: {len(csv_df)} nasabah.")
     except FileNotFoundError:
-        print("WARNING: CSV seed tidak ditemukan, hanya proses user dari DB.")
+        print("WARNING: CSV seed tidak ditemukan.")
 
     db_df = build_scv_from_db(db)
-    if not db_df.empty:
-        print(f"Berhasil membaca {len(db_df)} nasabah dari DB.")
+    print(f"DB: {len(db_df)} nasabah.")
 
     if not csv_df.empty and not db_df.empty:
         existing_ids = set(csv_df['user_id'].tolist())
         new_users_df = db_df[~db_df['user_id'].isin(existing_ids)]
+        print(f"User baru dari DB: {len(new_users_df)}")
         scv_df = pd.concat([csv_df, new_users_df], ignore_index=True)
-        print(f"Total: {len(scv_df)} nasabah ({len(new_users_df)} user baru dari DB).")
     elif not csv_df.empty:
         scv_df = csv_df
     elif not db_df.empty:
         scv_df = db_df
     else:
-        print("ERROR: Tidak ada data nasabah untuk diproses.")
+        print("ERROR: Tidak ada data untuk diproses.")
         db.close()
         return
 
     # ===========================================================================
-    # 3. VALIDASI KOLOM + ISI NaN
+    # 3. PASTIKAN SEMUA KOLOM ADA — isi 0 jika tidak ada
     # ===========================================================================
-    missing_clustering = [c for c in features_for_clustering if c not in scv_df.columns]
-    missing_rf         = [c for c in rf_features if c not in scv_df.columns]
-
-    # Tambahkan kolom yang hilang dengan nilai 0
-    for col in missing_clustering + missing_rf:
+    all_needed = list(set(features_for_clustering + rf_features))
+    for col in all_needed:
         if col not in scv_df.columns:
             scv_df[col] = 0
-            print(f"INFO: Kolom '{col}' tidak ditemukan, diisi 0.")
-
-    # Isi NaN yang tersisa dengan median (numerik) atau 0
-    for col in features_for_clustering + rf_features:
-        if scv_df[col].isnull().any():
-            if scv_df[col].dtype in ['float64', 'int64']:
-                scv_df[col] = scv_df[col].fillna(scv_df[col].median())
-            else:
-                scv_df[col] = scv_df[col].fillna(0)
+            print(f"INFO: Kolom '{col}' diisi 0.")
+        scv_df[col] = pd.to_numeric(scv_df[col], errors='coerce').fillna(0)
 
     # ===========================================================================
-    # 4. PREDIKSI CLUSTER (K-MEANS) & CTA (RANDOM FOREST)
+    # 4. PREDIKSI
     # ===========================================================================
     X_scaled = scaler.transform(scv_df[features_for_clustering])
-    clusters = kmeans.predict(X_scaled)
+    clusters  = kmeans.predict(X_scaled)
     scv_df['cluster_id'] = clusters
 
-    cta_encoded_preds = rf_model.predict(scv_df[rf_features])
-    cta_preds = le_cta.inverse_transform(cta_encoded_preds)
+    cta_encoded = rf_model.predict(scv_df[rf_features])
+    cta_preds   = le_cta.inverse_transform(cta_encoded)
     scv_df['predicted_cta_batch'] = cta_preds
 
     proba = rf_model.predict_proba(scv_df[rf_features])
     scv_df['batch_confidence'] = proba.max(axis=1)
 
-    print(f"Prediksi selesai. Distribusi cluster:")
-    print(scv_df['cluster_id'].value_counts().sort_index().to_string())
+    print(f"Distribusi cluster:\n{scv_df['cluster_id'].value_counts().sort_index().to_string()}")
 
     # ===========================================================================
-    # 5. SIMPAN KE DATABASE (Tabel ClusteringResult)
+    # 5. SIMPAN KE DB
     # ===========================================================================
-    print("Menyimpan hasil prediksi ke database...")
-
     has_generated_message = 'generated_message' in scv_df.columns
-    success_count = 0
-    skip_count    = 0
-    error_count   = 0
 
     fallback_map = {
         'Food & Beverage':           "Nikmati promo spesial di merchant favoritmu!",
         'E-Wallet':                  "Top-up e-wallet makin praktis. Dapatkan cashback khusus minggu ini!",
-        'Transport & Mobility':      "Sering bepergian? Gunakan QRIS untuk bayar transportasi dan dapatkan diskonnya.",
-        'Internet':                  "Tagihan internet terbayar tepat waktu? Yuk, pantau pengeluaran rutinmu.",
-        'Utilities':                 "Kelola tagihan bulananmu lebih mudah dengan fitur jadwal otomatis.",
-        'Lifestyle & Entertainment': "Hiburan lancar, keuangan tetap aman. Cek promo spesial bulan ini!",
-        'Telco':                     "Koneksi stabil adalah kebutuhan. Jadwalkan pembelian paket datamu otomatis.",
+        'Transport & Mobility':      "Sering bepergian? Gunakan QRIS dan dapatkan diskonnya.",
+        'Internet':                  "Tagihan internet terbayar tepat waktu? Pantau pengeluaran rutinmu.",
+        'Utilities':                 "Kelola tagihan bulanan lebih mudah dengan fitur jadwal otomatis.",
+        'Lifestyle & Entertainment': "Hiburan lancar, keuangan tetap aman. Cek promo bulan ini!",
+        'Telco':                     "Koneksi stabil adalah kebutuhan. Jadwalkan pembelian paket datamu.",
         'Retail & Convenience':      "Belanja harian lebih hemat dengan promo merchant pilihan CIMB.",
     }
+
+    success_count = 0
+    skip_count    = 0
+    error_count   = 0
+
+    BATCH_SIZE = 100
 
     for idx, row in scv_df.iterrows():
         try:
             user_id       = int(row['user_id'])
             cluster_id    = int(row['cluster_id'])
-            predicted_cta = str(row['predicted_cta_batch'])
-            fav_category  = str(row['fav_category'])
+            predicted_cta = str(row['predicted_cta_batch']).strip() or "Ambil Promo"
+            fav_category  = str(row.get('fav_category', 'Retail & Convenience'))
             confidence    = float(row['batch_confidence'])
 
             raw = row.get('trigger_reason', '')
@@ -175,17 +176,12 @@ def run_batch_prediction():
             if has_generated_message and str(raw_msg).strip() not in ('', 'nan', 'None'):
                 msg = str(raw_msg).strip()
             else:
-                msg = fallback_map.get(
-                    fav_category,
-                    "Nikmati kemudahan transaksi harian dengan promo spesial pilihan CIMB untuk Anda."
-                )
+                msg = fallback_map.get(fav_category,
+                    "Nikmati kemudahan transaksi harian dengan promo spesial CIMB.")
 
-            predicted_cta = predicted_cta.strip() or "Ambil Promo"
-
-            profile_exists = db.query(models.Profile.user_id).filter(
+            if not db.query(models.Profile.user_id).filter(
                 models.Profile.user_id == user_id
-            ).first()
-            if not profile_exists:
+            ).first():
                 skip_count += 1
                 continue
 
@@ -215,9 +211,13 @@ def run_batch_prediction():
 
             success_count += 1
 
+            if success_count % BATCH_SIZE == 0:
+                db.commit()
+                print(f"  Commit: {success_count} user diproses...")
+
         except Exception as e:
             error_count += 1
-            print(f"WARNING: Gagal memproses user_id {row.get('user_id', '?')}: {str(e)}")
+            print(f"WARNING: user_id {row.get('user_id', '?')}: {str(e)}")
             continue
 
     db.commit()
@@ -225,10 +225,8 @@ def run_batch_prediction():
 
     print("=" * 60)
     print("BATCH PREDICTION SELESAI")
+    print(f"Berhasil : {success_count} | Skip : {skip_count} | Gagal : {error_count}")
     print("=" * 60)
-    print(f"Berhasil diproses : {success_count} user")
-    print(f"Di-skip (no FK)   : {skip_count} user")
-    print(f"Gagal             : {error_count} user")
 
 
 if __name__ == "__main__":

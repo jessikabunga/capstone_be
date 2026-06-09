@@ -1,5 +1,6 @@
 from enum import Enum
 from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi.background import BackgroundTasks
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
 import models 
@@ -210,7 +211,10 @@ models.Base.metadata.create_all(bind=engine)
 # ==========================================
 # Auth Helper
 # ==========================================
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(
+        token: str = Depends(oauth2_scheme), 
+        db: Session = Depends(get_db)
+    ):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token tidak valid atau sudah kedaluwarsa",
@@ -1040,14 +1044,15 @@ def get_dashboard_stats(
 # ==========================================
 @app.post("/admin/trigger-batch", tags=["Admin Tools"])
 def trigger_ml_pipeline(
+    background_tasks: BackgroundTasks,
     current_user: models.Profile = Depends(get_admin_user)
 ):
     try:
         from batch_predict import run_batch_prediction
-        run_batch_prediction()
+        background_tasks.add_task(run_batch_prediction)
         return {
-            "status": "success", 
-            "message": "ML Pipeline berhasil dijalankan secara manual."
+            "status": "success",
+            "message": "ML Pipeline sedang berjalan di background. Tunggu beberapa saat lalu cek /recommendation."
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline gagal: {str(e)}")
