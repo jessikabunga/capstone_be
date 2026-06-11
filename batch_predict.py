@@ -63,6 +63,9 @@ def build_scv_from_db(db: Session) -> pd.DataFrame:
     return df
 
 
+# ============================================
+# Auto triger untuk data massal
+# ============================================
 def run_batch_prediction():
     print("Memulai pipeline batch prediction ML...")
     db: Session = SessionLocal()
@@ -228,6 +231,93 @@ def run_batch_prediction():
     print(f"Berhasil : {success_count} | Skip : {skip_count} | Gagal : {error_count}")
     print("=" * 60)
 
+# ============================================
+# Auto triger untuk data per user
+# ============================================
+def run_single_user_prediction(user_id: int):
+    db: Session = SessionLocal()
+    try:
+        scaler                  = joblib.load('scaler_clustering.pkl')
+        kmeans                  = joblib.load('kmeans_model.pkl')
+        rf_model                = joblib.load('rf_cta_model.pkl')
+        le_cta                  = joblib.load('label_encoder_cta.pkl')
+        rf_features             = joblib.load('feature_columns.pkl')
+        features_for_clustering = joblib.load('clustering_feature_cols.pkl')
+    except FileNotFoundError as e:
+        print(f"ERROR pkl: {e}")
+        db.close()
+        return
+
+    # 1. Buat SCV dari DB lalu filter khusus untuk user ini saja
+    scv_df = build_scv_from_db(db)
+    if scv_df.empty:
+        print(f"User {user_id} belum memiliki transaksi apa pun.")
+        db.close()
+        return
+        
+    scv_df = scv_df[scv_df['user_id'] == user_id]
+    if scv_df.empty:
+        print(f"User {user_id} tidak ditemukan setelah ditarik dari DB.")
+        db.close()
+        return
+
+    # 2. Isi kolom yang kurang dengan angka 0 (Mengatasi masalah NaN/Missing columns)
+    all_needed = list(set(features_for_clustering + rf_features))
+    for col in all_needed:
+        if col not in scv_df.columns:
+            scv_df[col] = 0
+        scv_df[col] = pd.to_numeric(scv_df[col], errors='coerce').fillna(0)
+
+    # 3. Proses Prediksi ML
+    X_scaled  = scaler.transform(scv_df[features_for_clustering])
+    cluster_id = int(kmeans.predict(X_scaled)[0])
+    
+    cta_encoded = rf_model.predict(scv_df[rf_features])
+    predicted_cta = str(le_cta.inverse_transform(cta_encoded)[0]).strip() or "Ambil Promo"
+    
+    proba = rf_model.predict_proba(scv_df[rf_features])
+    confidence = float(proba.max(axis=1)[0])
+    
+    # 4. Generate Pesan Rekomendasi (Fallback)
+    fav_category = str(scv_df.iloc[0].get('fav_category', 'Retail & Convenience'))
+    fallback_map = {
+        'Food & Beverage':           "Nikmati promo spesial di merchant favoritmu!",
+        'E-Wallet':                  "Top-up e-wallet makin praktis. Dapatkan cashback khusus minggu ini!",
+        'Transport & Mobility':      "Sering bepergian? Gunakan QRIS dan dapatkan diskonnya.",
+        'Internet':                  "Tagihan internet terbayar tepat waktu? Pantau pengeluaran rutinmu.",
+        'Utilities':                 "Kelola tagihan bulananmu lebih mudah dengan fitur jadwal otomatis.",
+        'Lifestyle & Entertainment': "Hiburan lancar, keuangan tetap aman. Cek promo bulan ini!",
+        'Telco':                     "Koneksi stabil adalah kebutuhan. Jadwalkan pembelian paket datamu.",
+        'Retail & Convenience':      "Belanja harian lebih hemat dengan promo merchant pilihan CIMB.",
+    }
+    msg = fallback_map.get(fav_category, "Nikmati kemudahan transaksi harian dengan promo spesial CIMB.")
+
+    # 5. Simpan atau Update (Upsert) ke Tabel ClusteringResult
+    existing = db.query(models.ClusteringResult).filter(
+        models.ClusteringResult.user_id == user_id
+    ).first()
+    
+    if existing:
+        existing.cluster_id                = cluster_id
+        existing.predicted_cta             = predicted_cta
+        existing.generated_message         = msg
+        existing.category_focus            = fav_category
+        existing.recommendation_confidence = confidence
+        existing.timestamp                 = datetime.now(timezone.utc)
+    else:
+        db.add(models.ClusteringResult(
+            user_id=user_id, 
+            cluster_id=cluster_id,
+            predicted_cta=predicted_cta, 
+            generated_message=msg,
+            category_focus=fav_category,
+            recommendation_confidence=confidence,
+            timestamp=datetime.now(timezone.utc)
+        ))
+        
+    db.commit()
+    db.close()
+    print(f"✅ Auto-trigger berhasil untuk user_id {user_id}: masuk Cluster {cluster_id}")
 
 if __name__ == "__main__":
     run_batch_prediction()

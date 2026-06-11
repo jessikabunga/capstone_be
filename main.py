@@ -1,5 +1,5 @@
 from enum import Enum
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.background import BackgroundTasks
 from sqlalchemy.orm import Session
 from database import engine, Base, get_db
@@ -466,10 +466,6 @@ def get_recent_transactions(
     current_user: models.Profile = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    FR-02: Menampilkan aktivitas transaksi terbaru untuk halaman beranda.
-    Default 5 transaksi, maksimal 20. Frontend bisa kirim ?limit=10.
-    """
     if not current_user.full_name:
         raise HTTPException(status_code=404, detail="Profil belum diisi")
  
@@ -527,6 +523,7 @@ def validate_account(
 @app.post("/transfer", tags=["User Profile"])
 def process_transfer(
     data: TransferRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.Profile = Depends(get_current_user)
 ):
@@ -565,6 +562,9 @@ def process_transfer(
     db.add(new_trx)
     db.commit()
 
+    from batch_predict import run_single_user_prediction
+    background_tasks.add_task(run_single_user_prediction, current_user.user_id)
+
     return {
         "status": "success",
         "message": "Transfer berhasil",
@@ -574,6 +574,7 @@ def process_transfer(
 @app.post("/transaction", tags=["Transaction"])
 def process_transaction(
     data: schemas.TransactionCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.Profile = Depends(get_current_user)
 ):
@@ -606,6 +607,9 @@ def process_transaction(
     db.add(current_user)
     db.add(new_trx)
     db.commit()
+
+    from batch_predict import run_single_user_prediction
+    background_tasks.add_task(run_single_user_prediction, current_user.user_id)
 
     return {
         "status": "success",
