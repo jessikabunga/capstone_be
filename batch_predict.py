@@ -292,23 +292,21 @@ def run_single_user_prediction(user_id: int):
     }
     msg = fallback_map.get(fav_category, "Nikmati kemudahan transaksi harian dengan promo spesial CIMB.")
 
-    # 5. Simpan atau Update (Upsert) ke Tabel ClusteringResult
     existing = db.query(models.ClusteringResult).filter(
         models.ClusteringResult.user_id == user_id
     ).first()
-    
+
     if existing:
         existing.cluster_id                = cluster_id
         existing.predicted_cta             = predicted_cta
-        existing.generated_message         = msg
         existing.category_focus            = fav_category
         existing.recommendation_confidence = confidence
         existing.timestamp                 = datetime.now(timezone.utc)
     else:
         db.add(models.ClusteringResult(
-            user_id=user_id, 
+            user_id=user_id,
             cluster_id=cluster_id,
-            predicted_cta=predicted_cta, 
+            predicted_cta=predicted_cta,
             generated_message=msg,
             category_focus=fav_category,
             recommendation_confidence=confidence,
